@@ -1,199 +1,337 @@
-"""
-Main travel service that orchestrates all API calls.
-"""
-from typing import Dict, Optional, List
-from .wikipedia_service import WikipediaService
-from .unsplash_service import UnsplashService
-from .weather_service import WeatherService
-from .route_service import RouteService
-from .hotels_service import HotelsService
+import requests
 import logging
+from django.conf import settings
+from django.core.cache import cache
+from typing import Dict, List, Optional
+import time
 
 logger = logging.getLogger(__name__)
 
 
 class TravelService:
-    """Main service class that combines all travel data sources."""
-    
+    """
+    Professional service for handling travel information using multiple free APIs:
+    - Geoapify for geocoding and places
+    - Unsplash for high-quality images
+    - OpenWeatherMap for weather data
+    - OpenRouteService for distances and directions
+    """
+
     def __init__(self):
-        self.wikipedia_service = WikipediaService()
-        self.unsplash_service = UnsplashService()
-        self.weather_service = WeatherService()
-        self.route_service = RouteService()
-        self.hotels_service = HotelsService()
-    
+        self.geoapify_key = settings.GEOPI_API_KEY
+        self.unsplash_key = settings.UNSPLASH_ACCESS_KEY
+        self.weather_key = settings.OPENWEATHER_API_KEY
+        self.routing_key = settings.OPENROUTESERVICE_API_KEY
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'TravelAI/1.0'})
+
     def get_travel_info(self, place: str, user_location: Optional[str] = None) -> Dict:
         """
         Get comprehensive travel information for a place.
         
         Args:
-            place: Name of the destination place
-            user_location: Optional user's current location
+            place: Destination place name
+            user_location: User's current location (optional)
             
         Returns:
-            Dictionary containing all travel information
+            Dict containing all travel information
         """
         try:
-            # Parallel data fetching (simplified - in production use async)
-            description = self.wikipedia_service.get_place_description(place)
-            wiki_info = self.wikipedia_service.get_place_info(place)
-            images = self.unsplash_service.get_place_images(place, limit=5)
-            weather = self.weather_service.get_weather(place)
-            top_spots = self._get_top_spots(place, description)
+            # 1. Get place coordinates and details
+            place_data = self._geocode_place(place)
+            if not place_data:
+                return {'error': 'Place not found'}
+
+            lat, lon = place_data['lat'], place_data['lon']
             
-            route = None
+            # 2. Get place images
+            images = self._get_place_images(place, limit=10)
+            
+            # 3. Get weather information
+            weather = self._get_weather(lat, lon)
+            
+            # 4. Get nearby attractions
+            attractions = self._get_nearby_attractions(lat, lon, limit=15)
+            
+            # 5. Calculate distance if user location provided
+            distance_info = None
             if user_location:
-                route = self.route_service.get_route(user_location, place)
+                distance_info = self._calculate_distance(user_location, place)
             
-            hotels = self.hotels_service.get_hotels(place)
-            itinerary = self._generate_itinerary(place, days=3)
-            facts = self._generate_facts(place, wiki_info)
-            
+            # 6. Get place categories and details
+            place_details = self._get_place_details(place, lat, lon)
+
             return {
-                "place": place,
-                "description": description or f"{place} is a beautiful destination worth exploring.",
-                "images": images or [],
-                "top_spots": top_spots,
-                "weather": weather or {},
-                "route": route or {},
-                "hotels": hotels or [],
-                "itinerary": itinerary or f"Plan your visit to {place} and explore its attractions.",
-                "facts": facts or [],
+                'place': {
+                    'name': place_data.get('name', place),
+                    'formatted_address': place_data.get('formatted', place),
+                    'coordinates': {
+                        'latitude': lat,
+                        'longitude': lon
+                    },
+                    'details': place_details
+                },
+                'images': images,
+                'weather': weather,
+                'attractions': attractions,
+                'distance': distance_info,
+                'timestamp': time.time()
             }
-        
+
         except Exception as e:
             logger.error(f"Error in get_travel_info: {str(e)}", exc_info=True)
-            # Return minimal structure even on error
-            return {
-                "place": place,
-                "description": f"Information about {place}",
-                "images": [],
-                "top_spots": [],
-                "weather": {},
-                "route": {},
-                "hotels": [],
-                "itinerary": f"Plan your visit to {place}.",
-                "facts": [],
+            raise
+
+    def _geocode_place(self, place: str) -> Optional[Dict]:
+        """Geocode place name to coordinates using Geoapify"""
+        cache_key = f"geocode_{place.lower().replace(' ', '_')}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            url = "https://api.geoapify.com/v1/geocode/search"
+            params = {
+                'text': place,
+                'apiKey': self.geoapify_key,
+                'limit': 1
             }
-    
-    def _get_top_spots(self, place: str, description: str) -> list:
-        """Extract or generate top spots for a place."""
-        # Try to get from Wikipedia first
-        spots = self.wikipedia_service.get_top_attractions(place)
-        
-        if not spots:
-            # Fallback: Use default spots
-            spots = self._get_default_spots(place)
-        
-        return spots[:5]  # Limit to top 5
-    
-    def _generate_itinerary(self, place: str, days: int = 3) -> str:
-        """Generate a basic itinerary for a place."""
-        itinerary = f"""Plan your {days}-day visit to {place}:
-
-Day 1:
-- Morning: Arrive and check into your accommodation
-- Afternoon: Explore the city center and local markets
-- Evening: Enjoy local cuisine and cultural experiences
-
-Day 2:
-- Morning: Visit top historical and cultural sites
-- Afternoon: Discover local attractions and landmarks
-- Evening: Experience nightlife or local entertainment
-
-Day 3:
-- Morning: Explore natural attractions or parks
-- Afternoon: Shopping and souvenir hunting
-- Evening: Farewell dinner and preparation for departure
-
-Tips:
-- Book accommodations in advance
-- Carry local currency
-- Respect local customs and traditions
-- Stay hydrated and wear comfortable shoes
-- Keep important documents safe
-
-Enjoy your trip to {place}!"""
-        return itinerary
-    
-    def _generate_facts(self, place: str, wiki_info: Optional[Dict] = None) -> List[str]:
-        """Generate facts about a place, using Wikipedia data if available."""
-        facts = []
-        
-        if wiki_info:
-            # Extract facts from Wikipedia data
-            summary = wiki_info.get('summary', '')
-            description = wiki_info.get('description', '')
-            location = wiki_info.get('location')
             
-            # Add location fact if available
-            if location and location.get('latitude') and location.get('longitude'):
-                lat = location['latitude']
-                lon = location['longitude']
-                facts.append(f"{place} is located at coordinates {lat:.4f}°N, {lon:.4f}°E")
-            
-            # Extract interesting sentences from summary for facts
-            if summary:
-                sentences = summary.split('.')
-                for sentence in sentences[:3]:  # Take first 3 meaningful sentences
-                    sentence = sentence.strip()
-                    if len(sentence) > 30 and len(sentence) < 200:
-                        # Clean up the sentence
-                        sentence = sentence.replace('\n', ' ').strip()
-                        if sentence and not sentence.startswith('It '):
-                            facts.append(sentence)
-                            if len(facts) >= 3:
-                                break
-            
-            # Add description as fact if available
-            if description and description not in summary:
-                facts.append(f"{place} is {description.lower()}")
-        
-        # Fill remaining slots with generic facts if needed
-        generic_facts = [
-            f"{place} is a beautiful destination with rich culture and history.",
-            f"Best time to visit {place} is during pleasant weather seasons.",
-            f"{place} offers a variety of attractions for all types of travelers.",
-            f"Local cuisine in {place} is known for its unique flavors.",
-            f"{place} has a vibrant local community and welcoming atmosphere.",
-        ]
-        
-        # Add generic facts to reach 5 total
-        for fact in generic_facts:
-            if len(facts) >= 5:
-                break
-            if fact not in facts:
-                facts.append(fact)
-        
-        return facts[:5]  # Return maximum 5 facts
-    
-    def _get_default_spots(self, place: str) -> List[dict]:
-        """Return default spots when Wikipedia data is unavailable."""
-        return [
-            {
-                "name": f"{place} City Center",
-                "info": "The heart of the city with vibrant markets and historic buildings.",
-                "image_url": f"https://picsum.photos/600/400?random={hash(f'{place}1') % 1000}"
-            },
-            {
-                "name": f"{place} Heritage Site",
-                "info": "A significant historical landmark showcasing local culture.",
-                "image_url": f"https://picsum.photos/600/400?random={hash(f'{place}2') % 1000}"
-            },
-            {
-                "name": f"{place} Natural Park",
-                "info": "Beautiful natural surroundings perfect for relaxation and photography.",
-                "image_url": f"https://picsum.photos/600/400?random={hash(f'{place}3') % 1000}"
-            },
-            {
-                "name": f"{place} Museum",
-                "info": "Explore the rich history and culture of the region.",
-                "image_url": f"https://picsum.photos/600/400?random={hash(f'{place}4') % 1000}"
-            },
-            {
-                "name": f"{place} Viewpoint",
-                "info": "Stunning panoramic views of the city and surrounding areas.",
-                "image_url": f"https://picsum.photos/600/400?random={hash(f'{place}5') % 1000}"
-            },
-        ]
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
 
+            if data.get('features'):
+                feature = data['features'][0]
+                properties = feature['properties']
+                coords = feature['geometry']['coordinates']
+                
+                result = {
+                    'lat': coords[1],
+                    'lon': coords[0],
+                    'name': properties.get('name', place),
+                    'formatted': properties.get('formatted', place),
+                    'country': properties.get('country'),
+                    'city': properties.get('city'),
+                    'state': properties.get('state')
+                }
+                
+                cache.set(cache_key, result, 60 * 60 * 24)  # Cache for 24 hours
+                return result
+
+        except Exception as e:
+            logger.error(f"Geocoding error: {str(e)}")
+            
+        return None
+
+    def _get_place_images(self, place: str, limit: int = 10) -> List[Dict]:
+        """Get high-quality images from Unsplash"""
+        cache_key = f"images_{place.lower().replace(' ', '_')}_{limit}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            url = "https://api.unsplash.com/search/photos"
+            params = {
+                'query': place,
+                'per_page': limit,
+                'client_id': self.unsplash_key,
+                'orientation': 'landscape'
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            images = []
+            for photo in data.get('results', []):
+                images.append({
+                    'id': photo['id'],
+                    'url': photo['urls']['regular'],
+                    'thumb': photo['urls']['thumb'],
+                    'full': photo['urls']['full'],
+                    'photographer': photo['user']['name'],
+                    'photographer_url': photo['user']['links']['html'],
+                    'description': photo.get('description', photo.get('alt_description')),
+                    'width': photo['width'],
+                    'height': photo['height']
+                })
+
+            cache.set(cache_key, images, 60 * 60 * 12)  # Cache for 12 hours
+            return images
+
+        except Exception as e:
+            logger.error(f"Error fetching images: {str(e)}")
+            return []
+
+    def _get_weather(self, lat: float, lon: float) -> Optional[Dict]:
+        """Get current weather from OpenWeatherMap"""
+        if not self.weather_key:
+            return None
+
+        cache_key = f"weather_{lat}_{lon}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            url = "https://api.openweathermap.org/data/2.5/weather"
+            params = {
+                'lat': lat,
+                'lon': lon,
+                'appid': self.weather_key,
+                'units': 'metric'
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            weather = {
+                'temperature': data['main']['temp'],
+                'feels_like': data['main']['feels_like'],
+                'humidity': data['main']['humidity'],
+                'description': data['weather'][0]['description'],
+                'icon': data['weather'][0]['icon'],
+                'wind_speed': data['wind']['speed'],
+                'pressure': data['main']['pressure']
+            }
+
+            cache.set(cache_key, weather, 60 * 30)  # Cache for 30 minutes
+            return weather
+
+        except Exception as e:
+            logger.error(f"Error fetching weather: {str(e)}")
+            return None
+
+    def _get_nearby_attractions(self, lat: float, lon: float, limit: int = 15) -> List[Dict]:
+        """Get nearby tourist attractions using Geoapify"""
+        cache_key = f"attractions_{lat}_{lon}_{limit}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            url = "https://api.geoapify.com/v2/places"
+            params = {
+                'categories': 'tourism.attraction,tourism.sights,entertainment,leisure',
+                'filter': f'circle:{lon},{lat},10000',  # 10km radius
+                'limit': limit,
+                'apiKey': self.geoapify_key
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            attractions = []
+            for feature in data.get('features', []):
+                props = feature['properties']
+                coords = feature['geometry']['coordinates']
+                
+                attractions.append({
+                    'name': props.get('name', 'Unnamed'),
+                    'category': props.get('categories', []),
+                    'address': props.get('formatted'),
+                    'coordinates': {
+                        'latitude': coords[1],
+                        'longitude': coords[0]
+                    },
+                    'distance': props.get('distance'),
+                    'place_id': props.get('place_id')
+                })
+
+            cache.set(cache_key, attractions, 60 * 60 * 6)  # Cache for 6 hours
+            return attractions
+
+        except Exception as e:
+            logger.error(f"Error fetching attractions: {str(e)}")
+            return []
+
+    def _calculate_distance(self, origin: str, destination: str) -> Optional[Dict]:
+        """Calculate distance and route using OpenRouteService"""
+        if not self.routing_key:
+            return None
+
+        cache_key = f"distance_{origin}_{destination}".replace(' ', '_').lower()
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            # First geocode both locations
+            origin_coords = self._geocode_place(origin)
+            dest_coords = self._geocode_place(destination)
+            
+            if not origin_coords or not dest_coords:
+                return None
+
+            url = "https://api.openrouteservice.org/v2/directions/driving-car"
+            headers = {'Authorization': self.routing_key}
+            body = {
+                'coordinates': [
+                    [origin_coords['lon'], origin_coords['lat']],
+                    [dest_coords['lon'], dest_coords['lat']]
+                ]
+            }
+            
+            response = self.session.post(url, json=body, headers=headers, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+            route = data['routes'][0]
+            summary = route['summary']
+
+            distance_info = {
+                'distance_km': round(summary['distance'] / 1000, 2),
+                'duration_hours': round(summary['duration'] / 3600, 2),
+                'origin': origin,
+                'destination': destination
+            }
+
+            cache.set(cache_key, distance_info, 60 * 60 * 24)  # Cache for 24 hours
+            return distance_info
+
+        except Exception as e:
+            logger.error(f"Error calculating distance: {str(e)}")
+            return None
+
+    def _get_place_details(self, place: str, lat: float, lon: float) -> Dict:
+        """Get additional place details from Geoapify"""
+        cache_key = f"place_details_{place.lower().replace(' ', '_')}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            url = "https://api.geoapify.com/v2/places"
+            params = {
+                'categories': 'tourism,commercial,entertainment',
+                'filter': f'circle:{lon},{lat},1000',
+                'limit': 5,
+                'apiKey': self.geoapify_key
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            details = {
+                'total_places': len(data.get('features', [])),
+                'categories': []
+            }
+
+            for feature in data.get('features', []):
+                props = feature['properties']
+                if 'categories' in props:
+                    details['categories'].extend(props['categories'])
+
+            details['categories'] = list(set(details['categories']))[:10]
+            
+            cache.set(cache_key, details, 60 * 60 * 12)  # Cache for 12 hours
+            return details
+
+        except Exception as e:
+            logger.error(f"Error fetching place details: {str(e)}")
+            return {'total_places': 0, 'categories': []}

@@ -28,21 +28,30 @@ class TopSpotCard extends StatelessWidget {
           children: [
             Expanded(
               flex: 3,
-              child: CachedNetworkImage(
-                imageUrl: spot.imageUrl,
-                width: double.infinity,
-                fit: BoxFit.cover,
-                placeholder: (context, url) => Container(
-                  color: Colors.grey.shade200,
-                  child: const Center(
-                    child: CircularProgressIndicator(),
-                  ),
-                ),
-                errorWidget: (context, url, error) => Container(
-                  color: Colors.grey.shade300,
-                  child: const Icon(Icons.image_not_supported),
-                ),
-              ),
+              child: spot.imageUrl != null && spot.imageUrl!.isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: spot.imageUrl!,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      placeholder: (context, url) => Container(
+                        color: Colors.grey.shade200,
+                        child: const Center(
+                          child: CircularProgressIndicator(),
+                        ),
+                      ),
+                      errorWidget: (context, url, error) => Container(
+                        color: Colors.grey.shade300,
+                        child: const Icon(Icons.image_not_supported),
+                      ),
+                    )
+                  : Container(
+                      width: double.infinity,
+                      color: Colors.grey.shade300,
+                      child: const Icon(
+                        Icons.image_not_supported,
+                        size: 48,
+                      ),
+                    ),
             ),
             Expanded(
               flex: 2,
@@ -64,7 +73,7 @@ class TopSpotCard extends StatelessWidget {
                     const SizedBox(height: 8),
                     Expanded(
                       child: Text(
-                        spot.info,
+                        spot.info ?? '',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey.shade600,
@@ -83,4 +92,3 @@ class TopSpotCard extends StatelessWidget {
     );
   }
 }
-

@@ -42,7 +42,7 @@ class RouteCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  route.distance,
+                  route.distance!.isNotEmpty ? route.distance! : 'N/A',
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
@@ -50,7 +50,7 @@ class RouteCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  route.duration,
+                  route.duration!.isNotEmpty ? route.duration! : 'N/A',
                   style: TextStyle(
                     fontSize: 14,
                     color: Colors.grey.shade600,
